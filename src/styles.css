@@ -1,0 +1,177 @@
+/* ---------- Radias — monochrome UI ---------- */
+:root {
+  --bg:        #000;
+  --fg:        #f2f2f2;
+  --mid:       #8a8a8a;
+  --dim:       #4a4a4a;
+  --line:      #1c1c1c;
+  --panel:     rgba(10, 10, 10, 0.72);
+  --panel-br:  #242424;
+  --accent:    #ffffff;
+  --mono:      'SF Mono', 'JetBrains Mono', 'Menlo', 'Consolas', ui-monospace, monospace;
+  --sans:      -apple-system, BlinkMacSystemFont, 'Inter', 'Helvetica Neue', system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--sans);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+#stage {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: #000;
+}
+
+#view {
+  display: block;
+  background: #000;
+  /* actual pixel size is set in JS so we can record at exact export resolutions */
+}
+
+#chrome {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
+  padding: 18px 22px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--mid);
+}
+
+#title {
+  position: absolute;
+  top: 18px;
+  left: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+#title .brand {
+  color: var(--fg);
+  font-weight: 600;
+  letter-spacing: 0.28em;
+}
+#title .by {
+  color: var(--dim);
+  font-size: 10px;
+}
+
+#hint {
+  position: absolute;
+  bottom: 18px;
+  left: 22px;
+  color: var(--dim);
+}
+
+#rec-indicator {
+  position: absolute;
+  top: 18px;
+  right: 22px;
+  padding: 4px 8px;
+  border: 1px solid var(--fg);
+  color: var(--fg);
+  background: rgba(255, 255, 255, 0.04);
+  animation: blink 1.1s steps(2, end) infinite;
+}
+#rec-indicator.hidden { display: none; }
+
+@keyframes blink {
+  50% { opacity: 0.25; }
+}
+
+/* ---------- lil-gui monochrome override ----------
+   lil-gui exposes CSS variables; we just reassign them. */
+.lil-gui {
+  --background-color:   var(--panel);
+  --text-color:         var(--fg);
+  --title-background-color: #000;
+  --title-text-color:   var(--fg);
+  --widget-color:       #141414;
+  --hover-color:        #1e1e1e;
+  --focus-color:        #2a2a2a;
+  --number-color:       var(--fg);
+  --string-color:       var(--fg);
+  --font-size:          11px;
+  --input-font-size:    11px;
+  --font-family:        var(--mono);
+  --font-family-mono:   var(--mono);
+  --padding:            8px;
+  --spacing:            4px;
+  --slider-knob-width:  2px;
+  --slider-input-width: 27%;
+  --color-input-width:  27%;
+  --slider-input-min-width: 45px;
+  --color-input-min-width:  45px;
+  --folder-indent:      8px;
+  --widget-padding:     0 0 0 3px;
+  --widget-border-radius: 0px;
+  --checkbox-size:      calc(var(--widget-height) * 0.75);
+  --scrollbar-width:    5px;
+
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  border-left: 1px solid var(--panel-br);
+}
+
+.lil-gui .title {
+  border-bottom: 1px solid var(--panel-br);
+  font-weight: 500;
+  letter-spacing: 0.18em;
+}
+
+.lil-gui.root > .children > .lil-gui > .title {
+  border-top: 1px solid var(--panel-br);
+}
+
+.lil-gui button {
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  border: 1px solid var(--panel-br) !important;
+  background: #0a0a0a !important;
+  color: var(--fg) !important;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.lil-gui button:hover {
+  background: #181818 !important;
+  border-color: #3a3a3a !important;
+}
+
+.lil-gui input[type="text"],
+.lil-gui input[type="number"] {
+  background: #0a0a0a !important;
+  border: 1px solid transparent !important;
+  color: var(--fg) !important;
+}
+
+.lil-gui .slider {
+  background: #0a0a0a !important;
+  border: 1px solid var(--panel-br) !important;
+}
+.lil-gui .slider.active,
+.lil-gui .slider:hover {
+  background: #121212 !important;
+}
+.lil-gui .slider .fill {
+  background: var(--fg) !important;
+}
+
+.lil-gui .display {
+  background: transparent !important;
+}

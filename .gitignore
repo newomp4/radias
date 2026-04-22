@@ -1,0 +1,8 @@
+node_modules
+dist
+.vite-cache
+.npm-cache
+.npm-prefix
+.claude
+.DS_Store
+*.log
