@@ -12,13 +12,19 @@
  * Still: toBlob on the canvas at PNG.
  */
 export const SIZE_PRESETS = {
-  'Square 1080': { w: 1080, h: 1080 },
-  'Square 2160': { w: 2160, h: 2160 },
-  'Portrait 1080 (9:16)': { w: 1080, h: 1920 },
-  'Landscape 1080 (16:9)': { w: 1920, h: 1080 },
-  'Landscape 1440 (16:9)': { w: 2560, h: 1440 },
-  'Landscape 2160 (16:9)': { w: 3840, h: 2160 },
-  'Fit viewport': { w: 0, h: 0 }  // uses current on-screen size
+  'Square 1080':             { w: 1080, h: 1080 },
+  'Square 2160':             { w: 2160, h: 2160 },
+  'Square 2880 (5K)':        { w: 2880, h: 2880 },
+  'Square 4320 (8K)':        { w: 4320, h: 4320 },
+  'Portrait 1080 (9:16)':    { w: 1080, h: 1920 },
+  'Portrait 2160 (9:16 4K)': { w: 2160, h: 3840 },
+  'Portrait 2880 (9:16 5K)': { w: 2880, h: 5120 },
+  'Landscape 1080 (16:9)':   { w: 1920, h: 1080 },
+  'Landscape 1440 (16:9)':   { w: 2560, h: 1440 },
+  'Landscape 2160 (16:9 4K)':{ w: 3840, h: 2160 },
+  'Landscape 2880 (16:9 5K)':{ w: 5120, h: 2880 },
+  'Landscape 4320 (16:9 8K)':{ w: 7680, h: 4320 },
+  'Fit viewport':            { w: 0, h: 0 }
 };
 
 function pickMimeType() {
@@ -48,7 +54,7 @@ export class Recorder {
     this._stopTimer = null;
   }
 
-  start({ fps = 60, bitrateMbps = 24, durationSec = 0 } = {}) {
+  start({ fps = 60, bitrateMbps = 24, durationSec = 0, alpha = false } = {}) {
     if (this.state !== 'idle') return;
 
     const stream = this.canvas.captureStream(fps);
@@ -64,7 +70,8 @@ export class Recorder {
     };
     recorder.onstop = () => {
       const blob = new Blob(this.chunks, { type: 'video/webm' });
-      this._download(blob, `radias-${timestamp()}.webm`);
+      const suffix = alpha ? '-alpha' : '';
+      this._download(blob, `radias${suffix}-${timestamp()}.webm`);
       this.state = 'idle';
       this.onStateChange('idle');
       clearInterval(this._tickTimer);
@@ -96,10 +103,11 @@ export class Recorder {
     this.recorder.stop();
   }
 
-  snapshot() {
+  snapshot({ alpha = false } = {}) {
+    const suffix = alpha ? '-alpha' : '';
     this.canvas.toBlob((blob) => {
       if (!blob) return;
-      this._download(blob, `radias-${timestamp()}.png`);
+      this._download(blob, `radias${suffix}-${timestamp()}.png`);
     }, 'image/png');
   }
 

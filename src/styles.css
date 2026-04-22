@@ -36,7 +36,12 @@ html, body {
 #view {
   display: block;
   background: #000;
-  /* actual pixel size is set in JS so we can record at exact export resolutions */
+  width: 100%;
+  height: 100%;
+  max-width: 100vw;
+  max-height: 100vh;
+  /* JS may override width/height inline when exporting at an exact size;
+     clearExportSize() strips those back out and we fall back to 100% here. */
 }
 
 #chrome {
@@ -174,4 +179,29 @@ html, body {
 
 .lil-gui .display {
   background: transparent !important;
+}
+
+/* Rainbow button — reveals the experimental folder. Sits at the bottom of
+   the GUI and animates a slowly-moving hue gradient. */
+.lil-gui .rainbow-btn button {
+  background: linear-gradient(
+    90deg,
+    #ff0040, #ff8800, #ffee00, #22dd55,
+    #22aaff, #8855ff, #ff00aa, #ff0040
+  ) !important;
+  background-size: 300% 100% !important;
+  animation: radias-rainbow 7s linear infinite;
+  border: 1px solid rgba(255, 255, 255, 0.15) !important;
+  color: #0a0a0a !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.2em !important;
+  text-shadow: 0 0 1px rgba(255, 255, 255, 0.35);
+}
+.lil-gui .rainbow-btn button:hover {
+  filter: brightness(1.12);
+  border-color: rgba(255, 255, 255, 0.4) !important;
+}
+@keyframes radias-rainbow {
+  0%   { background-position:   0% 50%; }
+  100% { background-position: 300% 50%; }
 }
