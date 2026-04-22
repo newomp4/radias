@@ -41,14 +41,22 @@ const params = {
   exportDuration:    0,
   exportTransparent: false,
 
-  // Experimental (hidden menu — press ` to reveal)
-  resolvePattern:   'collapse',   // collapse | shatter | stack | grid
-  connectionLines:  false,
-  rainbow:          false,
-  rainbowSpeed:     0.15,
-  glitchAmount:     0.0,
-  trails:           false,
-  trailAmount:      0.08,
+  // Experimental — each control drives a specific, deliberate piece of
+  // geometry. Hidden behind the rainbow button at the bottom of the GUI.
+  resolvePattern:     'collapse',  // collapse | shatter | phyllotaxis | torus-knot | great-circles
+  torusKnotP:         3,
+  torusKnotQ:         2,
+  lissajous:          false,
+  lissajousFx:        3,
+  lissajousFy:        2,
+  lissajousFz:        5,
+  lissajousAmp:       1.8,
+  harmonicLock:       false,
+  harmonicDenom:      4,
+  connectionMesh:     false,
+  connectionNeighbors:2,
+  trails:             false,
+  trailAmount:        0.08,
 
   // Actions
   randomize:       () => {},
@@ -57,7 +65,6 @@ const params = {
   snapshot:        () => {},
   toggleRecording: () => {},
   animateResolve:  () => {},
-  supernova:       () => {},
   viewTop:         () => {},
   viewBottom:      () => {},
   viewFront:       () => {},
@@ -157,8 +164,6 @@ params.animateResolve = () => {
   resolveAnim = { from, to, dur: 3.0, t0: performance.now() };
 };
 
-params.supernova = () => field.triggerSupernova();
-
 params.viewTop      = () => stage.snapTo({ x: 0.001, y: 1,     z: 0     });
 params.viewBottom   = () => stage.snapTo({ x: 0.001, y: -1,    z: 0     });
 params.viewFront    = () => stage.snapTo({ x: 0,     y: 0,     z: 1     });
@@ -236,20 +241,51 @@ const recordCtrl = fExport.add(params, 'toggleRecording').name('Start recording'
 
 // ------------------------------------------------------------------
 // Experimental — hidden until the rainbow button is clicked (or ` toggled).
-// These stack on top of the main parameters.
+// Every toggle drives a deliberate geometric mode.
+//   Resolve pattern    — target shape the field settles into as
+//                        `resolve` rises: collapse to origin, shatter
+//                        outward, phyllotaxis spiral (golden angle),
+//                        (p,q)-torus knot, or great-circle sphere cage.
+//   Lissajous orbit    — replaces the chaotic offset with a 3D
+//                        Lissajous curve at integer frequency ratios.
+//   Harmonic lock      — quantizes each ring's spin ratio to k/N so
+//                        spins are commensurable → stable moiré.
+//   Connection mesh    — orange kNN edges between ring centers; k
+//                        slider controls the density of the web.
+//   Motion trails      — disables clear-per-frame; old frames decay
+//                        into the new one via a fullscreen fade quad.
 // ------------------------------------------------------------------
 const fExp = gui.addFolder('∞ Experimental');
-fExp.add(params, 'resolvePattern', ['collapse', 'shatter', 'stack', 'grid'])
+
+fExp.add(params, 'resolvePattern',
+         ['collapse', 'shatter', 'phyllotaxis', 'torus-knot', 'great-circles'])
     .name('Resolve pattern');
-fExp.add(params, 'connectionLines').name('Connection lines');
-fExp.add(params, 'rainbow').name('Rainbow rings');
-fExp.add(params, 'rainbowSpeed', 0, 1, 0.01).name('Rainbow speed');
-fExp.add(params, 'glitchAmount', 0, 1.5, 0.01).name('Glitch');
-fExp.add(params, 'trails').name('Motion trails')
-    .onChange((v) => stage.enableTrails(v, params.trailAmount));
-fExp.add(params, 'trailAmount', 0.02, 0.4, 0.005).name('Trail fade')
-    .onChange((v) => stage.enableTrails(params.trails, v));
-fExp.add(params, 'supernova').name('✺ Supernova');
+
+const fKnot = fExp.addFolder('Torus knot (p, q)');
+fKnot.add(params, 'torusKnotP', 2, 7, 1).name('p');
+fKnot.add(params, 'torusKnotQ', 2, 7, 1).name('q');
+
+const fLiss = fExp.addFolder('Lissajous orbit');
+fLiss.add(params, 'lissajous'     ).name('Enabled');
+fLiss.add(params, 'lissajousFx', 1, 9, 1).name('fx');
+fLiss.add(params, 'lissajousFy', 1, 9, 1).name('fy');
+fLiss.add(params, 'lissajousFz', 1, 9, 1).name('fz');
+fLiss.add(params, 'lissajousAmp', 0, 5, 0.01).name('Amplitude');
+
+const fHarm = fExp.addFolder('Harmonic lock');
+fHarm.add(params, 'harmonicLock' ).name('Enabled');
+fHarm.add(params, 'harmonicDenom', 2, 12, 1).name('Denominator N');
+
+const fConn = fExp.addFolder('Connection mesh');
+fConn.add(params, 'connectionMesh' ).name('Enabled');
+fConn.add(params, 'connectionNeighbors', 1, 5, 1).name('k nearest');
+
+const fTrails = fExp.addFolder('Motion trails');
+fTrails.add(params, 'trails').name('Enabled')
+       .onChange((v) => stage.enableTrails(v, params.trailAmount));
+fTrails.add(params, 'trailAmount', 0.02, 0.4, 0.005).name('Fade amount')
+       .onChange((v) => stage.enableTrails(params.trails, v));
+
 fExp.hide();
 
 let experimentalShown = false;

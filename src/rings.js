@@ -1,27 +1,39 @@
 import * as THREE from 'three';
-import { Line2 }        from 'three/addons/lines/Line2.js';
-import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
-import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
+import { Line2 } from 'three/addons/lines/Line2.js';
 
 /**
  * Ring field — one Line2 mesh per ring, each with its own cloned
- * LineMaterial so rings can be tinted individually (rainbow, supernova
- * flash, etc.). The base material on Stage holds the shared config; its
- * resolution / linewidth / opacity / color are copied onto every ring's
- * clone each frame, then overridden per-ring where an experimental mode
- * asks for it.
+ * LineMaterial so per-ring tinting (e.g. flash on supernova) is possible
+ * without breaking the shared-material architecture. The base material
+ * lives on Stage; each frame its resolution / linewidth / opacity / color
+ * are copied onto every ring's clone.
  *
- * Each ring has a baked "personality" (tilt axis, angle, offset direction,
- * spin rate, phases, glitch seed, grid slot) derived from a seeded PRNG,
- * so the layout is reproducible from the seed.
+ * Each ring carries a baked "personality" (tilt axis, angle, offset
+ * direction, spin rate, phases) seeded by `offsetSeed`, and pre-computed
+ * deterministic placements used by the experimental layout patterns.
  *
- * Experimental features in this file:
- *   - alternative resolve patterns (collapse / shatter / stack / grid)
- *   - glitch — per-ring positional jitter
- *   - rainbow — per-ring hue cycling
- *   - supernova — one-shot radial burst triggered from the UI
- *   - connection lines — an orange polyline through every ring's center
+ * Experimental geometry — all live in this file:
+ *   - Resolve targets (the shape rings settle into when resolve → 1):
+ *       collapse       — origin, aligned
+ *       shatter        — fly outward along their natural axis
+ *       phyllotaxis    — golden-angle spiral on the XZ plane
+ *       torus-knot     — distributed along a (p,q) torus-knot path,
+ *                        rings tilted normal to the knot tangent
+ *       great-circles  — ring becomes a great circle on a sphere; planes
+ *                        sampled by Fibonacci sphere lattice — every
+ *                        ring passes through the origin
+ *   - Lissajous orbit — replaces the chaotic offset position with a
+ *                        3D Lissajous curve (x = sin(fx·t+φ_x), …)
+ *   - Harmonic lock   — quantizes each ring's self-spin rate to an
+ *                        integer ratio k/N of the base rotation, so spins
+ *                        are commensurable and produce stable moiré
+ *   - kNN connections — each ring connects to its `k` nearest neighbors
+ *                        in 3D, deduplicated, drawn as orange line
+ *                        segments that update every frame
  */
+
+const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));   // ≈ 137.508°
+const UP = new THREE.Vector3(0, 1, 0);
 
 function mulberry32(seed) {
   let a = seed >>> 0;
@@ -45,7 +57,32 @@ function randomUnitVector(rand, out = new THREE.Vector3()) {
   return out.set(u * factor, v * factor, 1 - 2 * s);
 }
 
-const _tmpWhite = new THREE.Color(1, 1, 1);
+// (p, q) torus knot position on a torus with major radius R and minor r.
+function torusKnotPos(t, p, q, R, r, out) {
+  const cqt = Math.cos(q * t), sqt = Math.sin(q * t);
+  const cpt = Math.cos(p * t), spt = Math.sin(p * t);
+  return out.set(
+    (R + r * cqt) * cpt,
+     r * sqt,
+    (R + r * cqt) * spt
+  );
+}
+
+// Numerical tangent to the (p,q) torus knot — centred difference.
+function torusKnotTangent(t, p, q, R, r, out, tmpA, tmpB) {
+  const dt = 1e-3;
+  torusKnotPos(t + dt, p, q, R, r, tmpA);
+  torusKnotPos(t - dt, p, q, R, r, tmpB);
+  return out.copy(tmpA).sub(tmpB).normalize();
+}
+
+// Fibonacci-sphere normal for the i-th ring of N — used by great-circles.
+function fibonacciSphereNormal(i, N, out) {
+  const y = 1 - 2 * (i + 0.5) / N;
+  const r = Math.sqrt(Math.max(0, 1 - y * y));
+  const phi = i * GOLDEN_ANGLE;
+  return out.set(r * Math.cos(phi), y, r * Math.sin(phi));
+}
 
 class Ring {
   constructor(baseMaterial, geometry, index) {
@@ -54,19 +91,16 @@ class Ring {
     this.mesh.computeLineDistances();
     this.mesh.frustumCulled = false;
 
-    this.tiltAxis    = new THREE.Vector3(1, 0, 0);
-    this.tiltAngle   = 0;
-    this.offsetDir   = new THREE.Vector3(1, 0, 0);
-    this.spinPhase   = 0;
-    this.pulsePhase  = 0;
-    this.spinJitter  = 1;
-    this.glitchPhase = 0;
-    this.gridPos     = new THREE.Vector3();
-    this.index       = index;
+    this.tiltAxis   = new THREE.Vector3(1, 0, 0);
+    this.tiltAngle  = 0;
+    this.offsetDir  = new THREE.Vector3(1, 0, 0);
+    this.spinPhase  = 0;
+    this.pulsePhase = 0;
+    this.spinJitter = 1;
+    this.lissPhase  = 0;
+    this.index      = index;
 
-    this._tiltQ  = new THREE.Quaternion();
-    this._spinQ  = new THREE.Quaternion();
-    this._upAxis = new THREE.Vector3(0, 1, 0);
+    this._spinQ = new THREE.Quaternion();
   }
 
   dispose() {
@@ -85,33 +119,36 @@ export class RingField {
     this.rings  = [];
     this.params = null;
     this.time   = 0;
-    this._supernova = null;
 
-    this.groupQuat    = new THREE.Quaternion();
-    this._axisY       = new THREE.Vector3(0, 1, 0);
-    this._axisX       = new THREE.Vector3(1, 0, 0);
-    this._axisZ       = new THREE.Vector3(0, 0, 1);
+    this.groupQuat = new THREE.Quaternion();
+    this._axisY = new THREE.Vector3(0, 1, 0);
+    this._axisX = new THREE.Vector3(1, 0, 0);
+    this._axisZ = new THREE.Vector3(0, 0, 1);
+
     this._tmpQ        = new THREE.Quaternion();
-    this._tmpV        = new THREE.Vector3();
+    this._chaoticQ    = new THREE.Quaternion();
+    this._patternQ    = new THREE.Quaternion();
+    this._mixedQ      = new THREE.Quaternion();
     this._chaoticPos  = new THREE.Vector3();
     this._resolvedPos = new THREE.Vector3();
+    this._tmpV        = new THREE.Vector3();
+    this._tmpA        = new THREE.Vector3();
+    this._tmpB        = new THREE.Vector3();
+    this._normal      = new THREE.Vector3();
+    this._tangent     = new THREE.Vector3();
 
-    // Connection line: one Line2 whose positions are rewritten each frame
-    // to pass through every ring's center. Own material so we can paint it
-    // a different color (orange) from the rings.
-    this.connectionMaterial = new LineMaterial({
-      color:      0xff6a00,
-      linewidth:  1.2,
-      transparent:true,
-      opacity:    0.85,
-      worldUnits: false,
-      depthTest:  true,
-      depthWrite: false
+    // kNN connection mesh — raw line segments, one per kNN edge,
+    // rebuilt each frame from current ring centres.
+    this.connectionMaterial = new THREE.LineBasicMaterial({
+      color: 0xff6a00, transparent: true, opacity: 0.7, depthWrite: false
     });
-    this.connectionMaterial.resolution.copy(material.resolution);
-    this.connectionGeom = new LineGeometry();
-    this.connectionGeom.setPositions(new Float32Array([0, 0, 0, 0, 0, 0]));
-    this.connectionMesh = new Line2(this.connectionGeom, this.connectionMaterial);
+    this.connectionGeom = new THREE.BufferGeometry();
+    this.connectionPositions = new Float32Array(6);
+    this.connectionGeom.setAttribute(
+      'position',
+      new THREE.BufferAttribute(this.connectionPositions, 3)
+    );
+    this.connectionMesh = new THREE.LineSegments(this.connectionGeom, this.connectionMaterial);
     this.connectionMesh.frustumCulled = false;
     this.connectionMesh.visible = false;
     scene.add(this.connectionMesh);
@@ -125,27 +162,27 @@ export class RingField {
     this.rings = [];
 
     const rand = mulberry32(params.offsetSeed);
-    const cols = Math.max(1, Math.ceil(Math.sqrt(params.count)));
-    const spacing = 1.25;
-
     for (let i = 0; i < params.count; i++) {
       const ring = new Ring(this.material, this.geometry, i);
       randomUnitVector(rand, ring.tiltAxis);
-      ring.tiltAngle   = (rand() - 0.5) * Math.PI;
+      ring.tiltAngle  = (rand() - 0.5) * Math.PI;
       randomUnitVector(rand, ring.offsetDir);
-      ring.spinPhase   = rand() * Math.PI * 2;
-      ring.pulsePhase  = rand() * Math.PI * 2;
-      ring.spinJitter  = 0.3 + rand() * 1.4;
-      ring.glitchPhase = rand() * 1000;
-
-      // Grid slot for the 'grid' resolve pattern — centered square lattice.
-      const gx = (i % cols) - (cols - 1) / 2;
-      const gy = Math.floor(i / cols) - (cols - 1) / 2;
-      ring.gridPos.set(gx * spacing, gy * spacing, 0);
-
+      ring.spinPhase  = rand() * Math.PI * 2;
+      ring.pulsePhase = rand() * Math.PI * 2;
+      ring.spinJitter = 0.3 + rand() * 1.4;
+      ring.lissPhase  = rand() * Math.PI * 2;
       this.group.add(ring.mesh);
       this.rings.push(ring);
     }
+
+    // Resize kNN buffer for the new ring count.
+    const maxEdges = params.count * 6;  // count * max neighbors, with slack
+    this.connectionPositions = new Float32Array(maxEdges * 6);
+    this.connectionGeom.setAttribute(
+      'position',
+      new THREE.BufferAttribute(this.connectionPositions, 3)
+    );
+
     this.params = { ...params };
   }
 
@@ -158,47 +195,35 @@ export class RingField {
     else this.params = { ...params };
   }
 
-  triggerSupernova() {
-    this._supernova = { t0: performance.now(), dur: 1200 };
-  }
-
   update(dt, params) {
     this.time += dt;
     const resolve = params.resolve;
     const chaos   = 1 - resolve;
     const pattern = params.resolvePattern || 'collapse';
+    const count   = this.rings.length;
 
-    // Whole-sculpture precession — wobble still scales with chaos so the
-    // shape settles at full resolve regardless of pattern.
+    // Whole-sculpture precession — wobble fades with chaos so the shape
+    // settles when resolved regardless of which pattern was chosen.
     this.groupQuat.setFromAxisAngle(this._axisY, this.time * params.rotationSpeed);
-    this._tmpQ.setFromAxisAngle(
-      this._axisX,
-      Math.sin(this.time * 0.23) * params.wobble * chaos
-    );
+    this._tmpQ.setFromAxisAngle(this._axisX,
+      Math.sin(this.time * 0.23) * params.wobble * chaos);
     this.groupQuat.multiply(this._tmpQ);
-    this._tmpQ.setFromAxisAngle(
-      this._axisZ,
-      Math.cos(this.time * 0.19) * params.wobble * chaos * 0.7
-    );
+    this._tmpQ.setFromAxisAngle(this._axisZ,
+      Math.cos(this.time * 0.19) * params.wobble * chaos * 0.7);
     this.groupQuat.multiply(this._tmpQ);
-
-    // Supernova envelope: fast rise (0..0.25) to peak, then slow fall.
-    let novaK = 0;
-    if (this._supernova) {
-      const t = (performance.now() - this._supernova.t0) / this._supernova.dur;
-      if (t >= 1) this._supernova = null;
-      else novaK = t < 0.25 ? t / 0.25 : 1 - (t - 0.25) / 0.75;
-    }
-    const novaScale = 1 + novaK * 2.5;
 
     const pulseBase = Math.sin(this.time * params.pulseFrequency * Math.PI * 2);
-    const tiltScale = params.tiltAmount * chaos;
-    const count     = this.rings.length;
-    const rainbowSpeed = params.rainbowSpeed ?? 0.15;
-    const glitch    = params.glitchAmount || 0;
+
+    // Pre-compute pattern-wide quantities used inside the per-ring loop.
+    const sphereR  = params.baseSize * 1.8;            // great-circles radius
+    const torusR   = params.baseSize * 1.5;            // major torus radius
+    const torusr   = params.baseSize * 0.55;           // minor torus radius
+    const phylloS  = params.baseSize * 0.55;           // phyllotaxis spacing
+    const knotP    = Math.max(2, Math.round(params.torusKnotP));
+    const knotQ    = Math.max(2, Math.round(params.torusKnotQ));
 
     for (const r of this.rings) {
-      // ---- Radius -----------------------------------------------------
+      // ---- Radius -------------------------------------------------
       const stepped  = params.baseSize + r.index * params.radiusStep;
       const phase    = r.pulsePhase * params.pulsePhaseSpread;
       const pulseMul = 1 + pulseBase * params.pulseAmount *
@@ -207,89 +232,167 @@ export class RingField {
 
       let resolvedRadius;
       switch (pattern) {
-        case 'stack': resolvedRadius = Math.max(0.05, params.baseSize * 0.3 + r.index * 0.28); break;
-        case 'grid':  resolvedRadius = Math.max(0.05, params.baseSize * 0.42); break;
-        default:      resolvedRadius = chaoticRadius;
+        case 'great-circles': resolvedRadius = sphereR;                    break;
+        case 'torus-knot':    resolvedRadius = params.baseSize * 0.32;     break;
+        case 'phyllotaxis':   resolvedRadius = params.baseSize * 0.28;     break;
+        default:              resolvedRadius = chaoticRadius;              // collapse / shatter
       }
-      const radius = (chaoticRadius * chaos + resolvedRadius * resolve) * novaScale;
+      const radius = chaoticRadius * chaos + resolvedRadius * resolve;
       r.mesh.scale.setScalar(radius);
 
-      // ---- Orientation ------------------------------------------------
-      const chaoticTiltAngle  = r.tiltAngle * tiltScale;
-      const resolvedTiltAngle = pattern === 'shatter'
-        ? r.tiltAngle * params.tiltAmount
-        : 0;
-      const finalTilt = chaoticTiltAngle * chaos + resolvedTiltAngle * resolve;
-
-      r._tiltQ.setFromAxisAngle(r.tiltAxis, finalTilt);
-      const spinRate = params.rotationSpeed *
-                       (1 + (r.spinJitter - 1) * params.spinSpread);
-      r._spinQ.setFromAxisAngle(r._upAxis, r.spinPhase + this.time * spinRate);
-      r.mesh.quaternion
-        .copy(r._spinQ)
-        .premultiply(r._tiltQ)
-        .premultiply(this.groupQuat);
-
-      // ---- Position ---------------------------------------------------
-      this._chaoticPos.copy(r.offsetDir).multiplyScalar(params.offsetAmplitude);
-
+      // ---- Pattern-specific position & orientation ---------------
+      // Pattern position (in group-local space).
       switch (pattern) {
         case 'shatter':
           this._resolvedPos.copy(r.offsetDir).multiplyScalar(params.offsetAmplitude + 3.5);
           break;
-        case 'grid':
-          this._resolvedPos.copy(r.gridPos);
+        case 'phyllotaxis': {
+          const rho = phylloS * Math.sqrt(r.index + 0.5);
+          const th  = r.index * GOLDEN_ANGLE;
+          this._resolvedPos.set(rho * Math.cos(th), 0, rho * Math.sin(th));
           break;
-        default: // collapse, stack
+        }
+        case 'torus-knot': {
+          const t = (r.index / Math.max(1, count)) * Math.PI * 2;
+          torusKnotPos(t, knotP, knotQ, torusR, torusr, this._resolvedPos);
+          break;
+        }
+        case 'great-circles':
+        case 'collapse':
+        default:
           this._resolvedPos.set(0, 0, 0);
       }
+
+      // Pattern orientation (the rotation applied at resolve = 1).
+      switch (pattern) {
+        case 'shatter':
+          this._patternQ.setFromAxisAngle(r.tiltAxis, r.tiltAngle * params.tiltAmount);
+          break;
+        case 'great-circles':
+          fibonacciSphereNormal(r.index, count, this._normal);
+          this._patternQ.setFromUnitVectors(UP, this._normal);
+          break;
+        case 'torus-knot': {
+          const t = (r.index / Math.max(1, count)) * Math.PI * 2;
+          torusKnotTangent(t, knotP, knotQ, torusR, torusr,
+                           this._tangent, this._tmpA, this._tmpB);
+          this._patternQ.setFromUnitVectors(UP, this._tangent);
+          break;
+        }
+        case 'phyllotaxis':
+        case 'collapse':
+        default:
+          this._patternQ.identity();
+      }
+
+      // ---- Chaotic position --------------------------------------
+      // Either the existing seeded offset, or a 3D Lissajous orbit if
+      // that motion mode is on. Lissajous uses integer frequency ratios
+      // for x/y/z so the curve closes when fx, fy, fz share a period.
+      if (params.lissajous) {
+        const t   = this.time + r.lissPhase;
+        const amp = params.lissajousAmp;
+        this._chaoticPos.set(
+          amp * Math.sin(params.lissajousFx * t),
+          amp * Math.sin(params.lissajousFy * t + Math.PI * 0.5),
+          amp * Math.sin(params.lissajousFz * t)
+        );
+      } else {
+        this._chaoticPos.copy(r.offsetDir).multiplyScalar(params.offsetAmplitude);
+      }
+
+      // Final position: lerp(chaotic, resolved) then apply group precession.
       this._tmpV.copy(this._chaoticPos).lerp(this._resolvedPos, resolve)
                 .applyQuaternion(this.groupQuat);
-
-      if (glitch > 0) {
-        const p = r.glitchPhase;
-        this._tmpV.x += glitch * Math.sin(this.time * 13.7 + p) *
-                                Math.sin(this.time * 5.1 + p * 1.7);
-        this._tmpV.y += glitch * Math.sin(this.time * 11.3 + p * 0.7) *
-                                Math.cos(this.time * 6.9 + p);
-        this._tmpV.z += glitch * Math.cos(this.time * 9.8 + p * 1.3) *
-                                Math.sin(this.time * 4.3 + p * 0.5);
-      }
       r.mesh.position.copy(this._tmpV);
 
-      // ---- Material sync ---------------------------------------------
+      // ---- Chaotic orientation -----------------------------------
+      // Same axis-angle tilt as before; chaos scales it down with resolve
+      // so the slerp toward the pattern orientation reads cleanly.
+      this._chaoticQ.setFromAxisAngle(
+        r.tiltAxis,
+        r.tiltAngle * params.tiltAmount * chaos
+      );
+
+      // Slerp between the chaotic tilt and the pattern's locked orientation.
+      this._mixedQ.copy(this._chaoticQ).slerp(this._patternQ, resolve);
+
+      // Self-spin around local up. Harmonic lock quantizes the per-ring
+      // jitter to an integer fraction k/N of the base rate so all spins
+      // become commensurable → stable moiré patterns.
+      let jitter = r.spinJitter;
+      if (params.harmonicLock) {
+        const denom = Math.max(2, Math.round(params.harmonicDenom));
+        jitter = Math.max(1, Math.round(jitter * denom)) / denom;
+      }
+      const spinRate = params.rotationSpeed *
+                       (1 + (jitter - 1) * params.spinSpread);
+      r._spinQ.setFromAxisAngle(this._axisY, r.spinPhase + this.time * spinRate);
+
+      // Compose: spin (local) → mixed tilt → group precession.
+      r.mesh.quaternion
+        .copy(r._spinQ)
+        .premultiply(this._mixedQ)
+        .premultiply(this.groupQuat);
+
+      // ---- Material sync -----------------------------------------
       const m = r.material;
       m.linewidth = this.material.linewidth;
       m.opacity   = this.material.opacity;
       m.resolution.copy(this.material.resolution);
-
-      if (params.rainbow) {
-        const hue = ((r.index / Math.max(1, count)) + this.time * rainbowSpeed) % 1;
-        m.color.setHSL((hue + 1) % 1, 0.85, 0.6);
-      } else {
-        m.color.copy(this.material.color);
-      }
-      if (novaK > 0) {
-        m.color.lerp(_tmpWhite, novaK * 0.85);
-      }
+      m.color.copy(this.material.color);
     }
 
-    // Connection line — orange polyline through ring centers in index order.
-    if (params.connectionLines) {
-      this.connectionMaterial.resolution.copy(this.material.resolution);
-      this.connectionMaterial.linewidth = Math.max(0.8, this.material.linewidth * 0.6);
-      const positions = new Float32Array(this.rings.length * 3);
-      for (let i = 0; i < this.rings.length; i++) {
-        const p = this.rings[i].mesh.position;
-        positions[i * 3 + 0] = p.x;
-        positions[i * 3 + 1] = p.y;
-        positions[i * 3 + 2] = p.z;
-      }
-      this.connectionGeom.setPositions(positions);
-      this.connectionMesh.computeLineDistances();
+    // ---- kNN connection mesh -------------------------------------
+    if (params.connectionMesh && count >= 2) {
+      this._updateKnnMesh(params);
       this.connectionMesh.visible = true;
     } else {
       this.connectionMesh.visible = false;
     }
+  }
+
+  _updateKnnMesh(params) {
+    const k = Math.max(1, Math.min(8, Math.round(params.connectionNeighbors)));
+    const rings = this.rings;
+    const n = rings.length;
+
+    // Reuse arrays where possible. dists[] holds {j, d2} candidates.
+    const dists = new Array(n - 1);
+    const seen  = new Set();
+    let cursor  = 0;
+    const buf   = this.connectionPositions;
+
+    for (let i = 0; i < n; i++) {
+      const pi = rings[i].mesh.position;
+      let m = 0;
+      for (let j = 0; j < n; j++) {
+        if (i === j) continue;
+        const pj = rings[j].mesh.position;
+        const dx = pi.x - pj.x, dy = pi.y - pj.y, dz = pi.z - pj.z;
+        if (m < dists.length) dists[m++] = { j, d2: dx*dx + dy*dy + dz*dz };
+      }
+      // Partial sort: only need the smallest k. n is small (≤48) so a
+      // full sort is fine and simpler than a heap.
+      dists.sort((a, b) => a.d2 - b.d2);
+      const take = Math.min(k, dists.length);
+      for (let s = 0; s < take; s++) {
+        const j = dists[s].j;
+        const a = Math.min(i, j), b = Math.max(i, j);
+        const key = a * 1024 + b;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        if (cursor + 6 > buf.length) break;
+        const pj = rings[j].mesh.position;
+        buf[cursor++] = pi.x; buf[cursor++] = pi.y; buf[cursor++] = pi.z;
+        buf[cursor++] = pj.x; buf[cursor++] = pj.y; buf[cursor++] = pj.z;
+      }
+    }
+
+    this.connectionGeom.attributes.position.needsUpdate = true;
+    this.connectionGeom.setDrawRange(0, cursor / 3);
+    // Recompute bounds so frustum culling (off here, but cheap insurance)
+    // and any future raycasts have valid extents.
+    this.connectionGeom.computeBoundingSphere();
   }
 }
